@@ -11,7 +11,7 @@ class DeepAgentChat {
     }
 
     generateSessionId() {
-        return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        return 'session_' + Date.now() + '_' + Math.random().toString(36).substring(2, 11);
     }
 
     initializeElements() {
@@ -127,18 +127,47 @@ class DeepAgentChat {
                         switch (data.type) {
                             case 'start':
                                 assistantMessageElement = this.addMessage('', 'assistant', 'typing');
+                                this.updateMessageContent(assistantMessageElement, data.message, 'start');
+                                break;
+                            
+                            case 'agent_selected':
+                                this.updateMessageContent(assistantMessageElement, data.message, 'agent-selected');
                                 break;
                             
                             case 'search':
                                 this.updateMessageContent(assistantMessageElement, data.message, 'searching');
                                 break;
                             
+                            case 'search_retry':
+                                this.updateMessageContent(assistantMessageElement, data.message, 'search-retry');
+                                break;
+                            
+                            case 'search_failed':
+                                this.updateMessageContent(assistantMessageElement, data.message, 'search-failed');
+                                break;
+                            
                             case 'search_complete':
                                 this.updateMessageContent(assistantMessageElement, data.message, 'search-complete');
                                 break;
                             
-                            case 'thinking':
-                                this.updateMessageContent(assistantMessageElement, data.message, 'thinking');
+                            case 'search_empty':
+                                this.updateMessageContent(assistantMessageElement, data.message, 'search-empty');
+                                break;
+                            
+                            case 'analyzing':
+                                this.updateMessageContent(assistantMessageElement, data.message, 'analyzing');
+                                break;
+                            
+                            case 'agent_thinking':
+                                this.updateMessageContent(assistantMessageElement, data.message, 'agent-thinking');
+                                break;
+                            
+                            case 'processing_complete':
+                                this.updateMessageContent(assistantMessageElement, data.message, 'processing-complete');
+                                break;
+                            
+                            case 'generating':
+                                this.updateMessageContent(assistantMessageElement, data.message, 'generating');
                                 break;
                             
                             case 'content':
@@ -146,13 +175,25 @@ class DeepAgentChat {
                                 if (data.sources && data.sources.length > 0) {
                                     sources = data.sources;
                                 }
-                                this.updateMessageContent(assistantMessageElement, fullMessage, 'content');
+                                let progressText = data.progress ? ` (${data.progress})` : '';
+                                this.updateMessageContent(assistantMessageElement, fullMessage, 'content', progressText);
+                                break;
+                            
+                            case 'agent_error':
+                                this.updateMessageContent(assistantMessageElement, data.message, 'agent-error');
+                                break;
+                            
+                            case 'fallback':
+                                this.updateMessageContent(assistantMessageElement, data.message, 'fallback');
                                 break;
                             
                             case 'complete':
                                 this.updateMessageContent(assistantMessageElement, fullMessage, 'complete');
                                 if (sources.length > 0) {
                                     this.addSources(assistantMessageElement, sources);
+                                }
+                                if (data.stats) {
+                                    this.showCompletionStats(assistantMessageElement, data.stats);
                                 }
                                 break;
                             
@@ -215,29 +256,60 @@ class DeepAgentChat {
         return messageDiv;
     }
 
-    updateMessageContent(messageElement, content, type) {
+    updateMessageContent(messageElement, content, type, extra = '') {
         if (!messageElement) return;
         
         const messageText = messageElement.querySelector('.message-content');
         
         switch (type) {
+            case 'start':
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-robot fa-spin mr-2 text-indigo-600"></i>${content}</div>`;
+                break;
+            case 'agent-selected':
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-check text-green-500 mr-2"></i>${content}</div>`;
+                break;
             case 'searching':
-                messageText.innerHTML = `<i class="fas fa-search fa-spin mr-2"></i>${content}`;
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-search fa-spin mr-2 text-blue-600"></i>${content}</div>`;
+                break;
+            case 'search-retry':
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-redo fa-spin mr-2 text-yellow-600"></i>${content}</div>`;
+                break;
+            case 'search-failed':
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-exclamation-triangle text-yellow-500 mr-2"></i>${content}</div>`;
                 break;
             case 'search-complete':
-                messageText.innerHTML = `<i class="fas fa-check text-green-500 mr-2"></i>${content}`;
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-check text-green-500 mr-2"></i>${content}</div>`;
                 break;
-            case 'thinking':
-                messageText.innerHTML = `<i class="fas fa-brain fa-pulse mr-2"></i>${content}`;
+            case 'search-empty':
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-info-circle text-blue-500 mr-2"></i>${content}</div>`;
+                break;
+            case 'analyzing':
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-brain fa-pulse mr-2 text-purple-600"></i>${content}</div>`;
+                break;
+            case 'agent-thinking':
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-cog fa-spin mr-2 text-indigo-600"></i>${content}</div>`;
+                break;
+            case 'processing-complete':
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-check text-green-500 mr-2"></i>${content}</div>`;
+                break;
+            case 'generating':
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-pen fa-pulse mr-2 text-green-600"></i>${content}</div>`;
                 break;
             case 'content':
-                messageText.innerHTML = this.formatMessage(content) + '<span class="typing-animation"></span>';
+                const progressInfo = extra ? `<span class="text-xs text-gray-500 ml-2">${extra}</span>` : '';
+                messageText.innerHTML = this.formatMessage(content) + '<span class="typing-animation"></span>' + progressInfo;
+                break;
+            case 'agent-error':
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-exclamation-triangle text-red-500 mr-2"></i>${content}</div>`;
+                break;
+            case 'fallback':
+                messageText.innerHTML = `<div class="status-message"><i class="fas fa-redo text-yellow-600 mr-2"></i>${content}</div>`;
                 break;
             case 'complete':
                 messageText.innerHTML = this.formatMessage(content);
                 break;
             case 'error':
-                messageText.innerHTML = `<i class="fas fa-exclamation-triangle text-red-500 mr-2"></i>${content}`;
+                messageText.innerHTML = `<div class="error-message"><i class="fas fa-exclamation-triangle text-red-500 mr-2"></i>${content}</div>`;
                 break;
         }
         
@@ -278,14 +350,94 @@ class DeepAgentChat {
         messageContent.appendChild(sourcesDiv);
     }
 
+    showCompletionStats(messageElement, stats) {
+        if (!stats) return;
+        
+        const statsDiv = document.createElement('div');
+        statsDiv.className = 'mt-2 text-xs text-gray-500 border-t border-gray-200 pt-2';
+        
+        const statsItems = [];
+        if (stats.response_length) {
+            statsItems.push(`📝 ${stats.response_length} 字符`);
+        }
+        if (stats.search_results) {
+            statsItems.push(`🔍 ${stats.search_results} 个来源`);
+        }
+        if (stats.agent_type) {
+            statsItems.push(`🤖 ${stats.agent_type}`);
+        }
+        
+        if (statsItems.length > 0) {
+            statsDiv.innerHTML = `<i class="fas fa-info-circle mr-1"></i>${statsItems.join(' • ')}`;
+            const messageContent = messageElement.querySelector('.message-content').parentElement;
+            messageContent.appendChild(statsDiv);
+        }
+    }
+
     formatMessage(content) {
-        // 简单的 Markdown 格式化
-        return content
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/`(.*?)`/g, '<code>$1</code>')
-            .replace(/\n/g, '<br>')
-            .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+        if (!content) return '';
+        
+        try {
+            // 配置 marked 选项
+            marked.setOptions({
+                breaks: true,
+                gfm: true,
+                sanitize: false,
+                highlight: function(code, lang) {
+                    if (lang && hljs.getLanguage(lang)) {
+                        try {
+                            return hljs.highlight(code, { language: lang }).value;
+                        } catch (err) {}
+                    }
+                    return hljs.highlightAuto(code).value;
+                }
+            });
+            
+            // 使用 marked 渲染 Markdown
+            let html = marked.parse(content);
+            
+            // 为链接添加 target="_blank"
+            html = html.replace(/<a href/g, '<a target="_blank" rel="noopener noreferrer" href');
+            
+            // 为表格添加样式
+            html = html.replace(/<table>/g, '<table class="table-auto border-collapse border border-gray-300 my-4">');
+            html = html.replace(/<th>/g, '<th class="border border-gray-300 px-4 py-2 bg-gray-100 font-semibold">');
+            html = html.replace(/<td>/g, '<td class="border border-gray-300 px-4 py-2">');
+            
+            // 为代码块添加样式
+            html = html.replace(/<pre><code/g, '<pre class="bg-gray-100 rounded-lg p-4 overflow-x-auto my-4"><code');
+            html = html.replace(/<code>/g, '<code class="bg-gray-100 px-2 py-1 rounded text-sm">');
+            
+            // 为引用添加样式
+            html = html.replace(/<blockquote>/g, '<blockquote class="border-l-4 border-gray-300 pl-4 italic my-4 text-gray-700">');
+            
+            // 为列表添加样式
+            html = html.replace(/<ul>/g, '<ul class="list-disc list-inside my-4 space-y-1">');
+            html = html.replace(/<ol>/g, '<ol class="list-decimal list-inside my-4 space-y-1">');
+            html = html.replace(/<li>/g, '<li class="ml-4">');
+            
+            // 为标题添加样式
+            html = html.replace(/<h1>/g, '<h1 class="text-2xl font-bold my-4">');
+            html = html.replace(/<h2>/g, '<h2 class="text-xl font-bold my-3">');
+            html = html.replace(/<h3>/g, '<h3 class="text-lg font-bold my-2">');
+            html = html.replace(/<h4>/g, '<h4 class="text-base font-bold my-2">');
+            html = html.replace(/<h5>/g, '<h5 class="text-sm font-bold my-2">');
+            html = html.replace(/<h6>/g, '<h6 class="text-xs font-bold my-2">');
+            
+            // 为段落添加间距
+            html = html.replace(/<p>/g, '<p class="my-2">');
+            
+            return html;
+        } catch (error) {
+            console.error('Markdown 渲染失败:', error);
+            // 回退到简单的文本格式化
+            return content
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                .replace(/`(.*?)`/g, '<code class="bg-gray-100 px-2 py-1 rounded text-sm">$1</code>')
+                .replace(/\n/g, '<br>')
+                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+        }
     }
 
     setTyping(isTyping) {

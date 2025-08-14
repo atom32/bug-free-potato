@@ -186,3 +186,162 @@
     background: #f9fafb;
     font-weight: 600;
 }
+
+/* 引用样式 */
+.message-content blockquote {
+    border-left: 4px solid #e5e7eb;
+    padding-left: 16px;
+    margin: 16px 0;
+    font-style: italic;
+    color: #6b7280;
+}
+
+/* 标题样式 */
+.message-content h1,
+.message-content h2,
+.message-content h3,
+.message-content h4,
+.message-content h5,
+.message-content h6 {
+    font-weight: bold;
+    line-height: 1.25;
+    margin-top: 16px;
+    margin-bottom: 8px;
+}
+
+.message-content h1 { font-size: 1.5rem; }
+.message-content h2 { font-size: 1.25rem; }
+.message-content h3 { font-size: 1.125rem; }
+.message-content h4 { font-size: 1rem; }
+.message-content h5 { font-size: 0.875rem; }
+.message-content h6 { font-size: 0.75rem; }
+
+/* 段落样式 */
+.message-content p {
+    margin: 8px 0;
+    line-height: 1.6;
+}
+
+/* 强调样式 */
+.message-content strong {
+    font-weight: 600;
+}
+
+.message-content em {
+    font-style: italic;
+}
+
+/* 水平分割线 */
+.message-content hr {
+    border: none;
+    border-top: 1px solid #e5e7eb;
+    margin: 16px 0;
+}
+
+/* 代码高亮样式调整 */
+.message-content pre {
+    background: #f8f9fa !important;
+    border: 1px solid #e9ecef;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 12px 0;
+    font-size: 0.875rem;
+    line-height: 1.5;
+}
+
+.message-content pre code {
+    background: none !important;
+    padding: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
+}
+
+/* 内联代码样式 */
+.message-content :not(pre) > code {
+    background: #f1f5f9 !important;
+    color: #e11d48;
+    padding: 2px 6px !important;
+    border-radius: 4px !important;
+    font-size: 0.875em;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+}
+
+/* 状态消息样式 */
+.status-message {
+    padding: 8px 12px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    color: #64748b;
+    margin: 4px 0;
+    display: flex;
+    align-items: center;
+}
+
+.error-message {
+    padding: 8px 12px;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    color: #dc2626;
+    margin: 4px 0;
+    display: flex;
+    align-items: center;
+}
+
+/* 状态图标动画 */
+.status-message i.fa-spin {
+    animation: spin 1s linear infinite;
+}
+
+.status-message i.fa-pulse {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* 进度指示器 */
+.progress-indicator {
+    display: inline-block;
+    font-size: 0.75rem;
+    color: #9ca3af;
+    margin-left: 8px;
+}
+
+/* 完成统计样式 */
+.completion-stats {
+    font-size: 0.75rem;
+    color: #6b7280;
+    border-top: 1px solid #e5e7eb;
+    padding-top: 8px;
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* 改进的打字动画 */
+.typing-animation {
+    display: inline-block;
+    width: 8px;
+    height: 1em;
+    margin-left: 2px;
+}
+
+.typing-animation::after {
+    content: '|';
+    color: #6366f1;
+    animation: blink 1s infinite;
+    font-weight: bold;
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}

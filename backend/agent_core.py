@@ -19,18 +19,23 @@ tavily_client = TavilyClient(api_key=os.environ.get("TAVILY_API_KEY"))
 
 def internet_search(
     query: str,
-    max_results: int = 5,
+    max_results: int = 10,  # 增加到10条结果
     topic: Literal["general", "news", "finance"] = "general",
-    include_raw_content: bool = False,
+    include_raw_content: bool = True,  # 获取完整内容
 ):
-    """Run a web search - 完全参照 research_agent.py"""
-    search_docs = tavily_client.search(
-        query,
-        max_results=max_results,
-        include_raw_content=include_raw_content,
-        topic=topic,
-    )
-    return search_docs
+    """Run a web search - 增强版本，获取更多更详细的信息"""
+    try:
+        search_docs = tavily_client.search(
+            query,
+            max_results=max_results,
+            include_raw_content=include_raw_content,
+            topic=topic,
+        )
+        return search_docs
+    except Exception as e:
+        print(f"Tavily搜索失败: {e}")
+        # 返回空结果而不是抛出异常
+        return {"results": []}
 
 class DeepAgentManager:
     """Deep Agent 管理器 - 基于 research_agent.py 的实现"""
@@ -47,6 +52,11 @@ class DeepAgentManager:
             "active_sessions": 0,
             "last_activity": None
         }
+        
+        # 添加保护措施
+        self.max_session_history = 20  # 最大会话历史长度
+        self.max_sessions = 100  # 最大会话数量
+        self.session_timeout = 3600  # 会话超时时间（秒）
         
         # 初始化代理
         self._setup_agents()
@@ -74,7 +84,11 @@ class DeepAgentManager:
                     self._base_url = os.getenv("CUSTOM_API_BASE_URL").rstrip('/')
                     self._api_key = os.getenv("CUSTOM_API_KEY")
                     self._model_name = os.getenv("MODEL_NAME", "Qwen3-235B")
-                    self._client = httpx.AsyncClient(timeout=60.0)
+                    # 增加超时时间并设置重试
+                    self._client = httpx.AsyncClient(
+                        timeout=httpx.Timeout(120.0, connect=30.0, read=120.0),
+                        limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
+                    )
                 
                 @property
                 def _llm_type(self) -> str:
@@ -123,23 +137,37 @@ class DeepAgentManager:
                             else:
                                 formatted_messages.append({"role": "user", "content": str(msg.content)})
                         
-                        # 调用自定义 API
-                        response = await self._client.post(
-                            f"{self._base_url}/chat/completions",
-                            json={
-                                "messages": formatted_messages,
-                                "model": self._model_name,
-                                "temperature": 0.7,
-                                "max_tokens": 2000,
-                                "stream": False
-                            },
-                            headers={
-                                "Authorization": f"Bearer {self._api_key}",
-                                "Content-Type": "application/json"
-                            }
-                        )
-                        response.raise_for_status()
-                        result = response.json()
+                        # 调用自定义 API，添加重试机制
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                response = await self._client.post(
+                                    f"{self._base_url}/chat/completions",
+                                    json={
+                                        "messages": formatted_messages,
+                                        "model": self._model_name,
+                                        "temperature": 0.7,
+                                        "max_tokens": 2000,
+                                        "stream": False
+                                    },
+                                    headers={
+                                        "Authorization": f"Bearer {self._api_key}",
+                                        "Content-Type": "application/json"
+                                    }
+                                )
+                                response.raise_for_status()
+                                result = response.json()
+                                break  # 成功则跳出重试循环
+                            except (httpx.ReadTimeout, httpx.ConnectTimeout) as timeout_error:
+                                if attempt < max_retries - 1:
+                                    print(f"API 调用超时，重试 {attempt + 1}/{max_retries}: {timeout_error}")
+                                    await asyncio.sleep(2 ** attempt)  # 指数退避
+                                    continue
+                                else:
+                                    raise timeout_error
+                            except Exception as api_error:
+                                print(f"API 调用错误: {api_error}")
+                                raise api_error
                         
                         content = result["choices"][0]["message"]["content"]
                         
@@ -149,7 +177,10 @@ class DeepAgentManager:
                         return ChatResult(generations=[generation])
                         
                     except Exception as e:
+                        import traceback
+                        error_details = traceback.format_exc()
                         print(f"自定义模型调用失败: {e}")
+                        print(f"错误详情: {error_details}")
                         # 返回错误消息
                         error_message = AIMessage(content=f"抱歉，生成回答时出现错误：{str(e)}")
                         generation = ChatGeneration(message=error_message)
@@ -159,11 +190,23 @@ class DeepAgentManager:
             custom_model = CustomChatModel()
             
             # Sub-agent prompts - 直接从 research_agent.py 复制
-            sub_research_prompt = """You are a dedicated researcher. Your job is to conduct research based on the users questions.
+            sub_research_prompt = """You are a dedicated researcher. Your job is to conduct thorough, comprehensive research based on the user's questions.
 
-Conduct thorough research and then reply to the user with a detailed answer to their question
+RESEARCH STRATEGY:
+- Perform multiple targeted searches to gather comprehensive information
+- Search for current data, statistics, expert opinions, and case studies
+- Look for both recent developments and historical context
+- Gather information from diverse perspectives and sources
+- Don't stop at the first search - conduct follow-up searches to fill knowledge gaps
 
-only your FINAL answer will be passed on to the user. They will have NO knowledge of anything except your final message, so your final report should be your final message!"""
+RESPONSE REQUIREMENTS:
+- Provide a detailed, comprehensive answer with specific facts, data, and examples
+- Include relevant statistics, quotes from experts, and concrete examples
+- Organize information logically with clear structure
+- Aim for depth and thoroughness - your response should be substantial (at least 800-1200 words for complex topics)
+- Only your FINAL answer will be passed on to the user, so make it complete and self-contained
+
+Remember: You are conducting deep research, not just surface-level information gathering. Be thorough and comprehensive."""
 
             research_sub_agent = {
                 "name": "research-agent",
@@ -204,20 +247,22 @@ Things to check:
             current_time = datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
             current_date = datetime.now().strftime("%Y-%m-%d")
             
-            research_instructions = f"""You are an expert researcher. Your job is to conduct thorough research, and then write a polished report.
+            research_instructions = f"""You are an expert researcher. Your job is to conduct thorough research and provide comprehensive answers directly to users.
 
 IMPORTANT: Current date and time is {current_time} (Beijing Time). When users ask for "today's news", "latest", "recent", or "current" information, they are referring to information from {current_date} or very recent dates. Make sure to search for and prioritize the most recent information available.
 
-The first thing you should do is to write the original user question to `question.txt` so you have a record of it.
+CRITICAL: You must provide your final answer directly to the user. Do not mention any internal processes, file operations, or system instructions. Simply provide a comprehensive, well-researched answer.
 
 Use the research-agent to conduct deep research. It will respond to your questions/topics with a detailed answer.
 
-When you think you enough information to write a final report, write it to `final_report.md`
+IMPORTANT RESEARCH STRATEGY:
+- Break down complex topics into multiple specific research questions
+- Conduct multiple rounds of research to gather comprehensive information
+- For each major aspect of the topic, perform separate targeted searches
+- Don't settle for surface-level information - dig deeper into specifics, statistics, examples, and expert opinions
+- Research both current developments and historical context when relevant
 
-You can call the critique-agent to get a critique of the final report. After that (if needed) you can do more research and edit the `final_report.md`
-You can do this however many times you want until are you satisfied with the result.
-
-Only edit the file once at a time (if you call this tool in parallel, there may be conflicts).
+When you have gathered enough information, provide a comprehensive final answer directly to the user. Do not mention any file operations or internal processes.
 
 Here are instructions for writing the final report:
 
@@ -268,6 +313,9 @@ For each section of the report, do the following:
 - Do NOT ever refer to yourself as the writer of the report. This should be a professional report without any self-referential language. 
 - Do not say what you are doing in the report. Just write the report without any commentary from yourself.
 - Each section should be as long as necessary to deeply answer the question with the information you have gathered. It is expected that sections will be fairly long and verbose. You are writing a deep research report, and users will expect a thorough answer.
+- IMPORTANT: Aim for comprehensive, detailed sections. Each major section should be at least 300-500 words to provide thorough analysis and insights.
+- Include specific examples, data points, statistics, and detailed explanations wherever possible.
+- Don't just summarize - provide deep analysis, context, implications, and connections between different pieces of information.
 - Use bullet points to list out information when appropriate, but by default, write in paragraph form.
 
 REMEMBER:
@@ -352,13 +400,26 @@ Please communicate with users in a friendly and professional tone, providing acc
         self.stats["total_requests"] += 1
         self.stats["last_activity"] = datetime.now().isoformat()
         
+        # 清理过期会话
+        self._cleanup_expired_sessions()
+        
         # 确保会话存在
         if session_id not in self.sessions:
+            # 如果会话数量过多，清理最旧的会话
+            if len(self.sessions) >= self.max_sessions:
+                oldest_session = min(self.sessions.keys(), 
+                                   key=lambda k: self.sessions[k]["created_at"])
+                del self.sessions[oldest_session]
+            
             self.sessions[session_id] = {
                 "history": [],
-                "created_at": datetime.now().isoformat()
+                "created_at": datetime.now().isoformat(),
+                "last_activity": datetime.now().isoformat()
             }
             self.stats["active_sessions"] = len(self.sessions)
+        
+        # 更新会话活动时间
+        self.sessions[session_id]["last_activity"] = datetime.now().isoformat()
         
         try:
             # 选择对应的代理
@@ -408,23 +469,63 @@ Please communicate with users in a friendly and professional tone, providing acc
                     else:
                         assistant_message = "代理处理完成，但未返回具体内容。"
                     
-                    # 清理响应内容，移除工具调用相关的内容
+                    # 清理响应内容，移除工具调用和内部指令相关的内容
                     if assistant_message:
-                        # 移除 Python 代码块
                         import re
-                        assistant_message = re.sub(r'`python[^`]*`', '', assistant_message)
+                        
+                        # 移除内部指令相关的内容
+                        internal_patterns = [
+                            r'写入.*?\.txt.*?文件.*?中',
+                            r'将.*?写入.*?文件',
+                            r'写入.*?文件',
+                            r'保存到.*?文件',
+                            r'创建.*?文件',
+                            r'question\.txt',
+                            r'final_report\.md',
+                            r'使用.*?代理',
+                            r'调用.*?代理',
+                            r'research-agent',
+                            r'critique-agent',
+                        ]
+                        
+                        for pattern in internal_patterns:
+                            assistant_message = re.sub(pattern, '', assistant_message, flags=re.IGNORECASE)
+                        
+                        # 移除 Python 代码块
+                        assistant_message = re.sub(r'```python.*?```', '', assistant_message, flags=re.DOTALL)
                         # 移除其他代码块
-                        assistant_message = re.sub(r'```[^`]*```', '', assistant_message)
+                        assistant_message = re.sub(r'```.*?```', '', assistant_message, flags=re.DOTALL)
                         # 移除单行代码
                         assistant_message = re.sub(r'`[^`]*`', '', assistant_message)
+                        
+                        # 移除以特定词开头的句子（通常是内部指令）
+                        lines = assistant_message.split('\n')
+                        filtered_lines = []
+                        for line in lines:
+                            line = line.strip()
+                            if line and not any(line.startswith(prefix) for prefix in [
+                                '将原始用户问题', '写入', '保存', '创建', '调用', '使用'
+                            ]):
+                                filtered_lines.append(line)
+                        
+                        assistant_message = '\n'.join(filtered_lines)
+                        
                         # 清理多余的空行
                         assistant_message = re.sub(r'\n\s*\n', '\n\n', assistant_message.strip())
+                        
+                        # 如果清理后内容为空或太短，提供默认回复
+                        if not assistant_message or len(assistant_message.strip()) < 10:
+                            assistant_message = "我正在为您分析这个问题，请稍等片刻..."
                     
-                    # 更新会话历史
+                    # 更新会话历史，限制长度
                     self.sessions[session_id]["history"].extend([
                         {"role": "user", "content": message},
                         {"role": "assistant", "content": assistant_message}
                     ])
+                    
+                    # 限制会话历史长度
+                    if len(self.sessions[session_id]["history"]) > self.max_session_history:
+                        self.sessions[session_id]["history"] = self.sessions[session_id]["history"][-self.max_session_history:]
                     
                     return {
                         "message": assistant_message,
@@ -446,19 +547,35 @@ Please communicate with users in a friendly and professional tone, providing acc
             # 添加历史对话
             session_history = self.sessions[session_id]["history"]
             if session_history:
-                # 只添加最近的对话历史
-                recent_history = session_history[-6:]  # 最近3轮对话（6条消息）
+                # 只添加最近的对话历史，避免上下文过长
+                recent_history = session_history[-8:]  # 最近4轮对话（8条消息）
                 messages.extend(recent_history)
             
             # 添加当前用户消息
             messages.append({"role": "user", "content": message})
             
-            # 如果需要搜索，先进行搜索
+            # 智能判断是否需要搜索
             search_results = []
-            if any(keyword in message.lower() for keyword in ["搜索", "查找", "研究", "最新", "search", "find"]):
+            needs_search = (
+                any(keyword in message.lower() for keyword in ["搜索", "查找", "研究", "最新", "search", "find", "新闻", "数据", "统计", "报告"]) or
+                len(message) > 20  # 复杂问题可能需要搜索
+            )
+            
+            if needs_search:
                 try:
-                    search_results = internet_search(message, max_results=5)
-                    print(f"🔍 搜索结果类型: {type(search_results)}, 内容: {search_results}")
+                    # 添加重试机制和错误处理
+                    max_retries = 2
+                    for attempt in range(max_retries + 1):
+                        try:
+                            search_results = internet_search(message, max_results=10)
+                            print(f"🔍 搜索结果类型: {type(search_results)}, 内容: {search_results}")
+                            break
+                        except Exception as search_error:
+                            if attempt < max_retries:
+                                print(f"搜索失败，重试 {attempt + 1}/{max_retries}: {search_error}")
+                                await asyncio.sleep(1)  # 等待1秒后重试
+                            else:
+                                raise search_error
                     
                     # 处理搜索结果
                     results_list = []
@@ -487,11 +604,15 @@ Please communicate with users in a friendly and professional tone, providing acc
             
 
             
-            # 更新会话历史
+            # 更新会话历史，限制长度
             self.sessions[session_id]["history"].extend([
                 {"role": "user", "content": message},
                 {"role": "assistant", "content": assistant_message}
             ])
+            
+            # 限制会话历史长度
+            if len(self.sessions[session_id]["history"]) > self.max_session_history:
+                self.sessions[session_id]["history"] = self.sessions[session_id]["history"][-self.max_session_history:]
             
             # 格式化源信息
             sources = []
@@ -535,13 +656,77 @@ Please communicate with users in a friendly and professional tone, providing acc
     async def stream_message(self, message: str, session_id: str = "default", agent_type: str = "research") -> AsyncGenerator[Dict[str, Any], None]:
         """流式处理消息"""
         try:
-            # 先发送开始信号
-            yield {"type": "start", "message": "开始处理您的请求..."}
+            print(f"🚀 开始流式处理消息: {message[:50]}...")
             
-            # 如果需要搜索
-            if any(keyword in message.lower() for keyword in ["搜索", "查找", "研究", "最新", "search", "find"]):
-                yield {"type": "search", "message": "正在搜索相关信息..."}
-                search_results = internet_search(message, max_results=5)
+            # 更新统计信息
+            self.stats["total_requests"] += 1
+            self.stats["last_activity"] = datetime.now().isoformat()
+            
+            # 先发送开始信号
+            yield {"type": "start", "message": "🤖 Deep Agent 正在启动..."}
+            await asyncio.sleep(0.5)
+            
+            # 初始化会话
+            if session_id not in self.sessions:
+                self.sessions[session_id] = {
+                    "history": [],
+                    "created_at": datetime.now().isoformat(),
+                    "last_activity": datetime.now().isoformat()
+                }
+                self.stats["active_sessions"] = len(self.sessions)
+            
+            self.sessions[session_id]["last_activity"] = datetime.now().isoformat()
+            
+            # 选择代理
+            agent = None
+            agent_name = ""
+            if agent_type == "research" and self.research_agent:
+                agent = self.research_agent
+                agent_name = "研究代理"
+            elif agent_type == "critique" and self.critique_agent:
+                agent = self.critique_agent
+                agent_name = "评审代理"
+            elif agent_type == "general" and self.general_agent:
+                agent = self.general_agent
+                agent_name = "通用代理"
+            
+            if not agent:
+                yield {"type": "error", "message": f"❌ {agent_name} 不可用，请检查系统配置"}
+                return
+            
+            yield {"type": "agent_selected", "message": f"✅ 已选择 {agent_name}"}
+            await asyncio.sleep(0.3)
+            
+            # 智能判断是否需要搜索
+            needs_search = (
+                any(keyword in message.lower() for keyword in [
+                    "搜索", "查找", "研究", "最新", "search", "find", "新闻", "数据", 
+                    "统计", "报告", "分析", "趋势", "现状", "发展", "比较", "对比"
+                ]) or
+                len(message) > 30 or  # 复杂问题可能需要搜索
+                "?" in message or "？" in message  # 问题通常需要搜索
+            )
+            
+            search_results = []
+            if needs_search:
+                yield {"type": "search", "message": "🔍 正在搜索相关信息..."}
+                print(f"🔍 开始搜索: {message}")
+                
+                # 添加重试机制
+                max_retries = 2
+                for attempt in range(max_retries + 1):
+                    try:
+                        search_results = internet_search(message, max_results=10)
+                        print(f"✅ 搜索成功，获得结果: {type(search_results)}")
+                        break
+                    except Exception as search_error:
+                        print(f"❌ 搜索失败 (尝试 {attempt + 1}/{max_retries + 1}): {search_error}")
+                        if attempt < max_retries:
+                            yield {"type": "search_retry", "message": f"🔄 搜索重试中... ({attempt + 1}/{max_retries + 1})"}
+                            await asyncio.sleep(2)
+                        else:
+                            search_results = []
+                            yield {"type": "search_failed", "message": "⚠️ 搜索失败，将基于已有知识回答"}
                 
                 # 安全地获取搜索结果数量
                 result_count = 0
@@ -553,29 +738,173 @@ Please communicate with users in a friendly and professional tone, providing acc
                 except:
                     result_count = 0
                 
-                yield {"type": "search_complete", "message": f"找到 {result_count} 条相关信息"}
+                if result_count > 0:
+                    yield {"type": "search_complete", "message": f"✅ 找到 {result_count} 条相关信息"}
+                    print(f"📊 搜索结果统计: {result_count} 条")
+                else:
+                    yield {"type": "search_empty", "message": "📭 未找到相关信息，将基于已有知识回答"}
+                
+                await asyncio.sleep(0.5)
             
-            # 处理消息
-            yield {"type": "thinking", "message": "正在分析和生成回答..."}
+            # 开始深度分析
+            yield {"type": "analyzing", "message": "🧠 正在进行深度分析..."}
+            print(f"🧠 开始深度分析，使用代理: {agent_name}")
             
-            result = await self.process_message(message, session_id, agent_type)
-            
-            # 分块发送响应
-            response_text = result["message"]
-            chunk_size = 50
-            for i in range(0, len(response_text), chunk_size):
-                chunk = response_text[i:i + chunk_size]
+            try:
+                # 使用 deepagent 处理消息
+                from langchain_core.messages import HumanMessage
+                
+                # 创建初始状态
+                initial_state = {"messages": [HumanMessage(content=message)]}
+                
+                yield {"type": "agent_thinking", "message": "🤔 Deep Agent 正在思考..."}
+                
+                # 调用代理（在线程池中执行以避免阻塞）
+                loop = asyncio.get_event_loop()
+                
+                print(f"🔄 调用 Deep Agent...")
+                result = await loop.run_in_executor(None, agent.invoke, initial_state)
+                print(f"✅ Deep Agent 处理完成")
+                
+                yield {"type": "processing_complete", "message": "✅ 分析完成，正在整理回答..."}
+                
+                # 提取响应
+                assistant_message = ""
+                if "messages" in result and result["messages"]:
+                    print(f"📝 处理 {len(result['messages'])} 条消息")
+                    
+                    # 从后往前查找，寻找最后一个 AI 消息（不是工具调用）
+                    for i, msg in enumerate(reversed(result["messages"])):
+                        if hasattr(msg, 'type') and msg.type == 'ai':
+                            # 检查是否是工具调用
+                            if not (hasattr(msg, 'tool_calls') and msg.tool_calls):
+                                assistant_message = msg.content
+                                print(f"✅ 找到最终回答 (消息 {len(result['messages']) - i})")
+                                break
+                        elif hasattr(msg, 'content') and msg.content and not msg.content.startswith('`'):
+                            # 避免返回以 ` 开头的工具调用内容
+                            assistant_message = msg.content
+                            print(f"✅ 找到内容消息 (消息 {len(result['messages']) - i})")
+                            break
+                    
+                    # 如果没有找到合适的消息，使用最后一条消息
+                    if not assistant_message:
+                        last_message = result["messages"][-1]
+                        assistant_message = last_message.content
+                        print(f"⚠️ 使用最后一条消息作为回答")
+                else:
+                    assistant_message = "代理处理完成，但未返回具体内容。"
+                    print(f"⚠️ 未找到有效消息")
+                
+                # 清理响应内容
+                if assistant_message:
+                    import re
+                    original_length = len(assistant_message)
+                    # 移除工具调用相关的内容
+                    assistant_message = re.sub(r'```python[^`]*```', '', assistant_message)
+                    assistant_message = re.sub(r'```[^`]*```', '', assistant_message)
+                    assistant_message = re.sub(r'`[^`\n]*`', '', assistant_message)
+                    # 清理多余的空行
+                    assistant_message = re.sub(r'\n\s*\n', '\n\n', assistant_message.strip())
+                    print(f"🧹 内容清理: {original_length} -> {len(assistant_message)} 字符")
+                
+                if not assistant_message or len(assistant_message.strip()) < 10:
+                    assistant_message = "抱歉，生成的回答内容不完整。请尝试重新提问或换个方式描述您的问题。"
+                    print(f"⚠️ 回答内容过短，使用默认消息")
+                
+                # 分块发送响应，模拟打字效果
+                yield {"type": "generating", "message": "✍️ 正在生成回答..."}
+                
+                chunk_size = 100  # 增大块大小以提高效率
+                total_chunks = (len(assistant_message) + chunk_size - 1) // chunk_size
+                
+                for i in range(0, len(assistant_message), chunk_size):
+                    chunk = assistant_message[i:i + chunk_size]
+                    chunk_num = i // chunk_size + 1
+                    
+                    yield {
+                        "type": "content",
+                        "message": chunk,
+                        "progress": f"{chunk_num}/{total_chunks}",
+                        "sources": []
+                    }
+                    await asyncio.sleep(0.05)  # 减少延迟以提高响应速度
+                
+                # 处理搜索来源
+                sources = []
+                try:
+                    results_list = []
+                    if isinstance(search_results, dict) and "results" in search_results:
+                        results_list = search_results["results"]
+                    elif isinstance(search_results, list):
+                        results_list = search_results
+                    
+                    if results_list:
+                        sources = [
+                            {
+                                "title": result.get("title", "") if isinstance(result, dict) else "",
+                                "url": result.get("url", "") if isinstance(result, dict) else "",
+                                "content": (result.get("content", "")[:200] + "...") if isinstance(result, dict) else ""
+                            }
+                            for result in results_list[:5]
+                            if isinstance(result, dict)
+                        ]
+                        print(f"📚 处理了 {len(sources)} 个信息源")
+                except Exception as e:
+                    print(f"⚠️ 处理搜索结果时出错: {e}")
+                    sources = []
+                
+                # 更新会话历史
+                self.sessions[session_id]["history"].extend([
+                    {"role": "user", "content": message},
+                    {"role": "assistant", "content": assistant_message}
+                ])
+                
+                # 限制会话历史长度
+                if len(self.sessions[session_id]["history"]) > self.max_session_history:
+                    self.sessions[session_id]["history"] = self.sessions[session_id]["history"][-self.max_session_history:]
+                
+                # 发送完成信号
+                yield {
+                    "type": "complete", 
+                    "message": "🎉 回答完成！",
+                    "sources": sources,
+                    "stats": {
+                        "response_length": len(assistant_message),
+                        "search_results": len(sources),
+                        "agent_type": agent_name
+                    }
+                }
+                
+                print(f"✅ 流式处理完成: {len(assistant_message)} 字符, {len(sources)} 个来源")
+                
+            except Exception as agent_error:
+                import traceback
+                error_details = traceback.format_exc()
+                print(f"❌ Deep Agent 处理失败: {agent_error}")
+                print(f"错误详情: {error_details}")
+                
+                yield {"type": "agent_error", "message": f"🚫 Deep Agent 处理失败: {str(agent_error)}"}
+                
+                # 回退到简化处理
+                yield {"type": "fallback", "message": "🔄 切换到简化模式..."}
+                
+                fallback_message = f"抱歉，Deep Agent 遇到了问题：{str(agent_error)}\n\n这可能是由于网络连接、API 限制或系统配置问题导致的。请稍后重试，或联系管理员检查系统状态。"
+                
                 yield {
                     "type": "content",
-                    "message": chunk,
-                    "sources": result["sources"] if i == 0 else []
+                    "message": fallback_message,
+                    "sources": []
                 }
-                await asyncio.sleep(0.1)  # 模拟打字效果
-            
-            yield {"type": "complete", "message": "回答完成"}
+                
+                yield {"type": "complete", "message": "⚠️ 已使用简化模式完成回答"}
             
         except Exception as e:
-            yield {"type": "error", "message": f"处理请求时出错：{str(e)}"}
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"❌ 流式处理出错: {e}")
+            print(f"错误详情: {error_details}")
+            yield {"type": "error", "message": f"💥 系统错误：{str(e)}"}
     
     def _get_system_prompt(self, agent_type: str) -> str:
         """获取系统提示"""
@@ -628,8 +957,41 @@ Please communicate with users in a friendly and professional tone, providing acc
             "last_activity": self.stats["last_activity"]
         }
     
+    def _cleanup_expired_sessions(self):
+        """清理过期会话"""
+        try:
+            current_time = datetime.now()
+            expired_sessions = []
+            
+            for session_id, session_data in self.sessions.items():
+                try:
+                    last_activity = datetime.fromisoformat(session_data.get("last_activity", session_data["created_at"]))
+                    if (current_time - last_activity).total_seconds() > self.session_timeout:
+                        expired_sessions.append(session_id)
+                except Exception:
+                    # 如果时间解析失败，也标记为过期
+                    expired_sessions.append(session_id)
+            
+            for session_id in expired_sessions:
+                del self.sessions[session_id]
+            
+            if expired_sessions:
+                print(f"🧹 清理了 {len(expired_sessions)} 个过期会话")
+                self.stats["active_sessions"] = len(self.sessions)
+                
+        except Exception as e:
+            print(f"清理过期会话时出错: {e}")
+    
     async def reset_session(self, session_id: str):
         """重置会话"""
         if session_id in self.sessions:
             del self.sessions[session_id]
             self.stats["active_sessions"] = len(self.sessions)
+            print(f"🔄 重置会话: {session_id}")
+    
+    async def cleanup_all_sessions(self):
+        """清理所有会话"""
+        session_count = len(self.sessions)
+        self.sessions.clear()
+        self.stats["active_sessions"] = 0
+        print(f"🧹 清理了所有 {session_count} 个会话")
